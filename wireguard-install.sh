@@ -83,3 +83,44 @@ generate_server_keys() {
         chmod 600 "${WG_DIR}/private.key" "${WG_DIR}/public.key"
     fi
 }
+
+# Detect primary network interface
+get_primary_interface() {
+    ip route show default | awk '{print $5}' | head -n1
+}
+
+# Create server wg0.conf
+setup_server_config() {
+    local port="${1:-51820}"
+    local interface
+    interface=$(get_primary_interface)
+    
+    if [[ -z "${interface}" ]]; then
+        echo "Error: Could not automatically detect primary network interface." >&2
+        exit 1
+    fi
+    
+    local server_priv
+    server_priv=$(cat "${WG_DIR}/private.key")
+    
+    echo "Creating ${WG_DIR}/wg0.conf..."
+    cat <<EOF > "${WG_DIR}/wg0.conf"
+[Interface]
+Address = 10.8.0.1/24
+SaveConfig = false
+ListenPort = ${port}
+PrivateKey = ${server_priv}
+
+# NAT Routing Rules
+PostUp = iptables -A FORWARD -i wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o ${interface} -j MASQUERADE; iptables -A FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+PostDown = iptables -D FORWARD -i wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o ${interface} -j MASQUERADE; iptables -D FORWARD -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+EOF
+    chmod 600 "${WG_DIR}/wg0.conf"
+}
+
+# Start WireGuard service
+start_wireguard() {
+    echo "Starting WireGuard service..."
+    systemctl enable wg-quick@wg0
+    systemctl start wg-quick@wg0
+}
