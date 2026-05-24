@@ -30,7 +30,7 @@ The service operates as a single-execution script triggered periodically (e.g., 
 ```
 
 ### Execution Steps:
-1. **Poll & Filter**: Connect to the Gmail IMAP server, fetch all `UNSEEN` emails, and filter to keep only those from `ALLOWED_SENDER`.
+1. **Poll & Filter**: Connect to the Gmail IMAP server, fetch all `UNSEEN` emails, and filter to keep only those whose sender matches one of the values in `ALLOWED_SENDERS`.
 2. **Process Mail & Streaming**: 
    - Parse each matching email for plain text content (or HTML stripped of tags).
    - Stream attachments directly to disk into a temporary `temp/` folder.
@@ -38,9 +38,9 @@ The service operates as a single-execution script triggered periodically (e.g., 
    - Send the extracted text body and the attachments as inline base64 content (or via File API if larger than 20MB) to Gemini API using a rotated API key.
    - Obtain structured Markdown or HTML analysis from Gemini.
 4. **Deliver via Telegram**:
-   - Post the analyzed text to the target Telegram chat/channel using standard HTML/Markdown styling.
+   - Post the analyzed text to all configured Telegram chats/channels in `TELEGRAM_CHAT_IDS` using standard HTML/Markdown styling.
 5. **Mark as Seen & Cleanup**:
-   - If processing is successful, mark the email as `\Seen` on the IMAP server.
+   - If processing and delivery are successful for all targets, mark the email as `\Seen` on the IMAP server.
    - Clean up and delete all files in the `temp/` directory immediately.
 
 ---
@@ -72,9 +72,9 @@ We load configurations from standard environment variables:
 - `IMAP_PORT`: Port of the IMAP server (default: `993`).
 - `EMAIL_ADDRESS`: Email address for authentication.
 - `EMAIL_PASSWORD`: App password (not the main password) for Gmail.
-- `ALLOWED_SENDER`: Email address of the sender to filter.
+- `ALLOWED_SENDERS`: Comma-separated list of sender email addresses to filter.
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token for API.
-- `TELEGRAM_CHAT_ID`: Telegram channel or personal chat ID.
+- `TELEGRAM_CHAT_IDS`: Comma-separated list of target Telegram channel or chat IDs.
 - `GEMINI_MODEL`: Gemini model to use (default: `gemini-2.5-flash`).
 - `GEMINI_SYSTEM_PROMPT`: Instructions for Gemini to format and extract info.
 
@@ -125,16 +125,16 @@ Payload structure:
 ```
 
 #### Telegram sendMessage Endpoint:
-`POST https://api.telegram.org/bot{token}/sendMessage`
-Payload structure:
+`POST https://api.telegram.org/bot{token}/sendMessage` (Sent sequentially for each active chat ID parsed from `TELEGRAM_CHAT_IDS` comma-separated list)
+Payload structure for each target:
 ```json
 {
-  "chat_id": "TELEGRAM_CHAT_ID",
+  "chat_id": "TARGET_TELEGRAM_CHAT_ID",
   "text": "FORMATTED_GEMINI_SUMMARY",
   "parse_mode": "HTML"
 }
 ```
-- If the text exceeds the 4,096 character Telegram limit, it is cleanly split on paragraph breaks (`\n\n` or `\n`) and sent as sequential messages.
+- If the text exceeds the 4,096 character Telegram limit, it is cleanly split on paragraph breaks (`\n\n` or `\n`) and sent as sequential messages to each recipient.
 
 ---
 
