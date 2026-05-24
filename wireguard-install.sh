@@ -229,3 +229,161 @@ EOF
         qrencode -t ansiutf8 < "${client_dir}/wg0-client.conf"
     fi
 }
+
+# List all active clients
+list_clients() {
+    if [[ ! -d "${CLIENTS_DIR}" ]] || [[ -z "$(ls -A "${CLIENTS_DIR}")" ]]; then
+        echo "No clients configured."
+        return 0
+    fi
+    
+    echo -e "\n--- Configured WireGuard Clients ---"
+    printf "%-20s %-15s %-30s\n" "Name" "IP Address" "Created"
+    echo "--------------------------------------------------------"
+    for dir in "${CLIENTS_DIR}"/*; do
+        if [[ -d "${dir}" ]]; then
+            local name
+            name=$(basename "${dir}")
+            local client_ip=""
+            if [[ -f "${dir}/wg0-client.conf" ]]; then
+                client_ip=$(grep "Address" "${dir}/wg0-client.conf" | awk '{print $3}' | cut -d'/' -f1)
+            fi
+            local created
+            created=$(date -r "${dir}" "+%Y-%m-%d %H:%M:%S")
+            printf "%-20s %-15s %-30s\n" "${name}" "${client_ip}" "${created}"
+        fi
+    done
+    echo ""
+}
+
+# Revoke (delete) client
+revoke_client() {
+    list_clients
+    if [[ ! -d "${CLIENTS_DIR}" ]] || [[ -z "$(ls -A "${CLIENTS_DIR}")" ]]; then
+        return 0
+    fi
+    
+    local name
+    read -rp "Enter the name of the client to revoke: " name
+    
+    if [[ -z "${name}" ]] || [[ ! -d "${CLIENTS_DIR}/${name}" ]]; then
+        echo "Error: Client '${name}' does not exist." >&2
+        return 1
+    fi
+    
+    local client_pub
+    client_pub=$(cat "${CLIENTS_DIR}/${name}/public.key")
+    
+    echo "Removing client '${name}'..."
+    
+    # Create a temporary config without the revoked peer blocks
+    local temp_conf
+    temp_conf=$(mktemp)
+    
+    # Filter out peer block of client from wg0.conf
+    # We remove the [Peer] block matching the PublicKey of the revoked client
+    # Utilizing an elegant awk state machine to discard the matching peer block
+    awk -v pubkey="${client_pub}" '
+    BEGIN { inside_peer = 0; peer_text = "" }
+    /^\[Peer\]/ {
+        if (inside_peer) {
+            if (peer_text !~ pubkey) {
+                print peer_text
+            }
+            peer_text = ""
+        }
+        inside_peer = 1
+        peer_text = $0 "\n"
+        next
+    }
+    inside_peer {
+        peer_text = peer_text $0 "\n"
+        if (NF == 0 || $0 ~ /^\[Interface\]/) {
+            inside_peer = 0
+            if (peer_text !~ pubkey) {
+                print peer_text
+            }
+            peer_text = ""
+        }
+        next
+    }
+    { print }
+    END {
+        if (inside_peer && peer_text !~ pubkey) {
+            print peer_text
+        }
+    }
+    ' "${WG_DIR}/wg0.conf" > "${temp_conf}"
+    
+    mv "${temp_conf}" "${WG_DIR}/wg0.conf"
+    chmod 600 "${WG_DIR}/wg0.conf"
+    
+    # Gracefully sync WireGuard rules
+    wg syncconf wg0 <(wg-quick strip wg0)
+    
+    # Delete client folder
+    rm -rf "${CLIENTS_DIR}/${name}"
+    echo "Client '${name}' revoked and files deleted successfully."
+}
+
+# Initial interactive installation wizard
+install_wizard() {
+    check_root
+    check_os
+    
+    if [[ -f "${WG_DIR}/wg0.conf" ]]; then
+        echo "WireGuard is already installed."
+        return 0
+    fi
+    
+    echo "Welcome to the WireGuard Autoinstaller!"
+    local port
+    read -rp "Enter the UDP port to listen on [Default: 51820]: " port
+    port="${port:-51820}"
+    
+    install_dependencies
+    enable_ip_forwarding
+    configure_host_firewall "${port}"
+    generate_server_keys
+    setup_server_config "${port}"
+    start_wireguard
+    
+    mkdir -p "${CLIENTS_DIR}"
+    chmod 700 "${CLIENTS_DIR}"
+    echo "Installation completed successfully."
+}
+
+# Main script menu
+main_menu() {
+    while true; do
+        echo "=============================="
+        echo " WireGuard Server Manager"
+        echo "=============================="
+        echo "1. Add New Client"
+        echo "2. List Clients"
+        echo "3. Revoke/Delete Client"
+        echo "4. Install WireGuard (Initial)"
+        echo "5. Exit"
+        echo "=============================="
+        local choice
+        read -rp "Enter choice [1-5]: " choice
+        
+        case "${choice}" in
+            1) check_root; add_client ;;
+            2) check_root; list_clients ;;
+            3) check_root; revoke_client ;;
+            4) install_wizard ;;
+            5) exit 0 ;;
+            *) echo "Invalid option." ;;
+        esac
+        echo ""
+    done
+}
+
+# Check if script is executed or sourced
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    if [[ ! -f "${WG_DIR}/wg0.conf" ]]; then
+        install_wizard
+    fi
+    main_menu
+fi
