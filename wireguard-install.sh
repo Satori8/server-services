@@ -124,3 +124,108 @@ start_wireguard() {
     systemctl enable wg-quick@wg0
     systemctl start wg-quick@wg0
 }
+
+# Fetch external public IP of VPS
+get_public_ip() {
+    curl -s --max-time 10 https://api.ipify.org || curl -s --max-time 10 https://icanhazip.com || echo "YOUR_SERVER_PUBLIC_IP"
+}
+
+# Generate next available IP in 10.8.0.0/24 subnet
+get_next_client_ip() {
+    local base_ip="10.8.0."
+    local last_octet=2
+    while [[ ${last_octet} -le 254 ]]; do
+        local candidate="${base_ip}${last_octet}"
+        # Check if the candidate IP is already written to wg0.conf or folders
+        if ! grep -q "${candidate}" "${WG_DIR}/wg0.conf" 2>/dev/null && [[ ! -d "${CLIENTS_DIR}/${candidate}" ]]; then
+            echo "${candidate}"
+            return 0
+        fi
+        ((last_octet++))
+    done
+    echo "Error: No available IPs in the VPN subnet." >&2
+    exit 1
+}
+
+# Add client peer
+add_client() {
+    local name
+    read -rp "Enter unique client name (alphanumeric only): " name
+    # Sanitize name
+    name=$(echo "${name}" | tr -dc 'a-zA-Z0-9_')
+    
+    if [[ -z "${name}" ]]; then
+        echo "Error: Invalid client name." >&2
+        return 1
+    fi
+    
+    if [[ -d "${CLIENTS_DIR}/${name}" ]]; then
+        echo "Error: Client '${name}' already exists." >&2
+        return 1
+    fi
+    
+    local client_ip
+    client_ip=$(get_next_client_ip)
+    
+    echo "Creating client config for ${name} (IP: ${client_ip})..."
+    
+    local client_dir="${CLIENTS_DIR}/${name}"
+    mkdir -p "${client_dir}"
+    chmod 700 "${client_dir}"
+    
+    # Generate client keys
+    local cli_priv cli_pub cli_psk
+    cli_priv=$(wg genkey)
+    cli_pub=$(echo "${cli_priv}" | wg pubkey)
+    cli_psk=$(wg genpsk)
+    
+    echo "${cli_priv}" > "${client_dir}/private.key"
+    echo "${cli_pub}" > "${client_dir}/public.key"
+    echo "${cli_psk}" > "${client_dir}/preshared.key"
+    chmod 600 "${client_dir}/private.key" "${client_dir}/public.key" "${client_dir}/preshared.key"
+    
+    local server_pub
+    server_pub=$(cat "${WG_DIR}/public.key")
+    local public_ip
+    public_ip=$(get_public_ip)
+    local server_port
+    server_port=$(grep "ListenPort" "${WG_DIR}/wg0.conf" | awk '{print $3}')
+    
+    # Append Peer block to server wg0.conf
+    cat <<EOF >> "${WG_DIR}/wg0.conf"
+
+[Peer]
+# Name = ${name}
+PublicKey = ${cli_pub}
+PresharedKey = ${cli_psk}
+AllowedIPs = ${client_ip}/32
+EOF
+    
+    # Live reload WireGuard gracefully without dropping connections
+    wg syncconf wg0 <(wg-quick strip wg0)
+    
+    # Create client configuration file
+    cat <<EOF > "${client_dir}/wg0-client.conf"
+[Interface]
+PrivateKey = ${cli_priv}
+Address = ${client_ip}/24
+DNS = ${DEFAULT_DNS}
+
+[Peer]
+PublicKey = ${server_pub}
+PresharedKey = ${cli_psk}
+Endpoint = ${public_ip}:${server_port}
+AllowedIPs = 0.0.0.0/0
+PersistentKeepalive = 25
+EOF
+    chmod 600 "${client_dir}/wg0-client.conf"
+    
+    echo -e "\n--- Client Configuration File (/etc/wireguard/clients/${name}/wg0-client.conf) ---"
+    cat "${client_dir}/wg0-client.conf"
+    echo -e "--------------------------------------------------------------------------------\n"
+    
+    if command -v qrencode >/dev/null; then
+        echo "Scan the QR code below to connect on mobile devices:"
+        qrencode -t ansiutf8 < "${client_dir}/wg0-client.conf"
+    fi
+}
