@@ -65,7 +65,9 @@ class TestGeminiClient(unittest.TestCase):
         mock_sleep.assert_called_once_with(0.5)
 
     @patch("httpx.Client")
-    def test_query_with_attachment_word_extracts_text(self, mock_httpx) -> None:
+    def test_query_with_word_document_attachment_extracts_text(
+        self, mock_httpx
+    ) -> None:
         client_instance = mock_httpx.return_value.__enter__.return_value
         client_instance.post.return_value = MagicMock(
             status_code=200,
@@ -75,36 +77,58 @@ class TestGeminiClient(unittest.TestCase):
         )
 
         gc = GeminiClient(self.config, self.key_manager)
-        # Mock _extract_text_from_file to return text
+        # Mock _extract_text_from_file to return text for .txt and None for other extensions
         gc._extract_text_from_file = MagicMock(
-            return_value="Mock attachment text contents"
+            side_effect=lambda path: (
+                "Mock attachment text contents" if path.suffix == ".txt" else None
+            )
         )
 
         # Mock _file_to_part so we can check if it was called
-        gc._file_to_part = MagicMock()
+        gc._file_to_part = MagicMock(
+            return_value={
+                "inlineData": {
+                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "data": "docx_b64",
+                }
+            }
+        )
 
         email_body = "Hello! Please find the attachment here."
-        mock_path = Path("temp/notes.txt")
+        mock_path = Path("temp/notes.docx")
+        mock_txt_path = Path("temp/notes.txt")
 
-        gc.query(email_body, [mock_path])
+        gc.query(email_body, [mock_path, mock_txt_path])
 
-        # _extract_text_from_file should have been called
-        gc._extract_text_from_file.assert_called_once_with(mock_path)
-        # _file_to_part should NOT have been called because it was extracted as text
-        gc._file_to_part.assert_not_called()
+        # _extract_text_from_file should have been called for both files
+        gc._extract_text_from_file.assert_any_call(mock_path)
+        gc._extract_text_from_file.assert_any_call(mock_txt_path)
+        # _file_to_part should have been called for the Word document
+        gc._file_to_part.assert_called_once_with(mock_path)
 
         # The payload post arguments should contain the extracted text
         args, kwargs = client_instance.post.call_args
         payload = kwargs["json"]
         parts = payload["contents"][0]["parts"]
-        self.assertEqual(len(parts), 2)
+        self.assertEqual(len(parts), 3)
+        self.assertEqual(
+            parts[1],
+            {
+                "inlineData": {
+                    "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "data": "docx_b64",
+                }
+            },
+        )
         self.assertIn(
             "Attachment 'notes.txt' Text Content:\nMock attachment text contents",
-            parts[1]["text"],
+            parts[2]["text"],
         )
 
     @patch("httpx.Client")
-    def test_query_without_attachment_word_sends_inlineData(self, mock_httpx) -> None:
+    def test_query_without_word_document_attachment_sends_inlineData(
+        self, mock_httpx
+    ) -> None:
         client_instance = mock_httpx.return_value.__enter__.return_value
         client_instance.post.return_value = MagicMock(
             status_code=200,
@@ -119,7 +143,7 @@ class TestGeminiClient(unittest.TestCase):
             return_value={"inlineData": {"mimeType": "text/plain", "data": "b64"}}
         )
 
-        email_body = "Just a normal email without the special word."
+        email_body = "Hello! Please find the attachment here."
         mock_path = Path("temp/notes.txt")
 
         gc.query(email_body, [mock_path])

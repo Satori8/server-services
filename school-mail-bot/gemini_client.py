@@ -70,11 +70,13 @@ class GeminiClient:
             }
         ]
 
-        # Check if email body contains the word "attachment" (case-insensitive)
-        contains_word_attachment = "attachment" in email_body.lower()
+        # Check if any attachment is a Word document (.doc or .docx)
+        has_word_attachment = any(
+            path.suffix.lower() in (".doc", ".docx") for path in attachments
+        )
 
         for path in attachments:
-            if contains_word_attachment:
+            if has_word_attachment:
                 text = self._extract_text_from_file(path)
                 if text is not None:
                     parts.append(
