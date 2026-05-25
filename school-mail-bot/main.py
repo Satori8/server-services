@@ -1,12 +1,13 @@
 import logging
 import sys
+import os
 from pathlib import Path
 from config import Config
 from key_manager import GeminiKeyManager
 from imap_bot import IMAPBot
 from gemini_client import GeminiClient
 from telegram_client import TelegramClient
-
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 # Configure basic logging with stdout
 logging.basicConfig(
     level=logging.INFO,
