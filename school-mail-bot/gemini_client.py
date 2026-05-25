@@ -4,6 +4,7 @@ from pathlib import Path
 import time
 import httpx
 import logging
+import docx
 from config import Config
 from key_manager import GeminiKeyManager
 
@@ -27,6 +28,15 @@ class GeminiClient:
         return {"inlineData": {"mimeType": mime_type, "data": b64_data}}
 
     def _extract_text_from_file(self, filepath: Path) -> str | None:
+        suffix = filepath.suffix.lower()
+        if suffix == ".docx":
+            try:
+                doc = docx.Document(filepath)
+                return "\n".join([para.text for para in doc.paragraphs])
+            except Exception as e:
+                logger.error(f"Error extracting text from docx {filepath}: {e}")
+                return None
+
         mime_type, _ = mimetypes.guess_type(filepath)
         if mime_type and not (
             mime_type.startswith("text/")
@@ -70,20 +80,12 @@ class GeminiClient:
             }
         ]
 
-        # Check if any attachment is a Word document (.doc or .docx)
-        has_word_attachment = any(
-            path.suffix.lower() in (".doc", ".docx") for path in attachments
-        )
-
         for path in attachments:
-            if has_word_attachment:
-                text = self._extract_text_from_file(path)
-                if text is not None:
-                    parts.append(
-                        {"text": f"Attachment '{path.name}' Text Content:\n{text}"}
-                    )
-                else:
-                    parts.append(self._file_to_part(path))
+            text = self._extract_text_from_file(path)
+            if text is not None:
+                parts.append(
+                    {"text": f"Attachment '{path.name}' Text Content:\n{text}"}
+                )
             else:
                 parts.append(self._file_to_part(path))
 

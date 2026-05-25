@@ -126,7 +126,7 @@ class TestGeminiClient(unittest.TestCase):
         )
 
     @patch("httpx.Client")
-    def test_query_without_word_document_attachment_sends_inlineData(
+    def test_query_without_word_document_attachment_sends_inlineData_on_failure(
         self, mock_httpx
     ) -> None:
         client_instance = mock_httpx.return_value.__enter__.return_value
@@ -138,7 +138,8 @@ class TestGeminiClient(unittest.TestCase):
         )
 
         gc = GeminiClient(self.config, self.key_manager)
-        gc._extract_text_from_file = MagicMock()
+        # Mock _extract_text_from_file to return None to force fallback to inlineData
+        gc._extract_text_from_file = MagicMock(return_value=None)
         gc._file_to_part = MagicMock(
             return_value={"inlineData": {"mimeType": "text/plain", "data": "b64"}}
         )
@@ -148,8 +149,8 @@ class TestGeminiClient(unittest.TestCase):
 
         gc.query(email_body, [mock_path])
 
-        # _extract_text_from_file should NOT be called
-        gc._extract_text_from_file.assert_not_called()
+        # _extract_text_from_file SHOULD be called now
+        gc._extract_text_from_file.assert_called_once_with(mock_path)
         # _file_to_part should be called
         gc._file_to_part.assert_called_once_with(mock_path)
 
@@ -161,6 +162,47 @@ class TestGeminiClient(unittest.TestCase):
         self.assertEqual(
             parts[1], {"inlineData": {"mimeType": "text/plain", "data": "b64"}}
         )
+
+    @patch("docx.Document")
+    @patch("httpx.Client")
+    def test_query_with_docx_attachment_extracts_text_using_library(
+        self, mock_httpx, mock_docx
+    ) -> None:
+        client_instance = mock_httpx.return_value.__enter__.return_value
+        client_instance.post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {
+                "candidates": [{"content": {"parts": [{"text": "Summarized content"}]}}]
+            },
+        )
+
+        # Mock docx.Document to return paragraphs
+        mock_doc = MagicMock()
+        para1 = MagicMock()
+        para1.text = "Hello world"
+        para2 = MagicMock()
+        para2.text = "This is a docx."
+        mock_doc.paragraphs = [para1, para2]
+        mock_docx.return_value = mock_doc
+
+        gc = GeminiClient(self.config, self.key_manager)
+
+        email_body = "Attached is a word doc."
+        mock_path = Path("temp/test.docx")
+
+        # We need to make sure _extract_text_from_file is NOT mocked so we test the real logic
+        # but _file_to_part SHOULD be mocked to avoid real file reading
+        gc._file_to_part = MagicMock()
+
+        gc.query(email_body, [mock_path])
+
+        # Verify post payload contains the extracted text
+        args, kwargs = client_instance.post.call_args
+        payload = kwargs["json"]
+        parts = payload["contents"][0]["parts"]
+        self.assertEqual(len(parts), 2)
+        self.assertIn("Hello world\nThis is a docx.", parts[1]["text"])
+        self.assertIn("Attachment 'test.docx' Text Content:", parts[1]["text"])
 
 
 if __name__ == "__main__":
