@@ -4,6 +4,25 @@ from pathlib import Path
 
 class Config:
     def __init__(self) -> None:
+        # Load .env file dynamically if it exists to support local execution
+        env_path = Path(__file__).parent / ".env"
+        if env_path.exists():
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    if "=" in line:
+                        key, val = line.split("=", 1)
+                        key = key.strip()
+                        val = val.strip()
+                        if (val.startswith('"') and val.endswith('"')) or (
+                            val.startswith("'") and val.endswith("'")
+                        ):
+                            val = val[1:-1]
+                        if key not in os.environ:
+                            os.environ[key] = val
+
         self.imap_server: str = os.getenv("IMAP_SERVER", "imap.gmail.com")
         self.imap_port: int = int(os.getenv("IMAP_PORT", "993"))
 
@@ -27,7 +46,12 @@ class Config:
         ]
 
         self.gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        self.gemini_system_prompt: str = os.getenv(
-            "GEMINI_SYSTEM_PROMPT",
-            "Analyze this school email and summarize the main points, action items, and deadlines.",
-        )
+        prompt_path = Path(__file__).parent / "prompt.md"
+        if prompt_path.exists():
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                self.gemini_system_prompt: str = f.read().strip()
+        else:
+            self.gemini_system_prompt: str = os.getenv(
+                "GEMINI_SYSTEM_PROMPT",
+                "Analyze this school email and summarize the main points, action items, and deadlines.",
+            )
