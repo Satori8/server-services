@@ -7,6 +7,7 @@ from key_manager import GeminiKeyManager
 from imap_bot import IMAPBot
 from gemini_client import GeminiClient
 from telegram_client import TelegramClient
+
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 # Configure basic logging with stdout
 logging.basicConfig(
@@ -57,9 +58,10 @@ def run() -> None:
                 continue
 
             logger.info(f"Processing email {email_id} from {sender}...")
-            body, attachments = bot.parse_email_message(message)
-
+            attachments = []
             try:
+                body, attachments = bot.parse_email_message(message)
+
                 # Get Gemini summary
                 summary = gemini.query(body, attachments)
 
@@ -72,8 +74,13 @@ def run() -> None:
                     logger.error(
                         f"Telegram delivery failed for email {email_id}; leaving unseen"
                     )
+                    bot.mark_unseen(mail_connection, email_id)
             except Exception as e:
                 logger.error(f"Error processing email {email_id}: {e}")
+                try:
+                    bot.mark_unseen(mail_connection, email_id)
+                except Exception as ex:
+                    logger.error(f"Failed to mark email {email_id} as unseen: {ex}")
             finally:
                 # Guarantee local storage remains totally clean
                 bot.cleanup_temp_files(attachments)

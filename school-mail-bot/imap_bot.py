@@ -101,6 +101,9 @@ class IMAPBot:
     def mark_seen(self, mail: imaplib.IMAP4_SSL, email_id: str) -> None:
         mail.store(email_id, "+FLAGS", "\\Seen")
 
+    def mark_unseen(self, mail: imaplib.IMAP4_SSL, email_id: str) -> None:
+        mail.store(email_id, "-FLAGS", "\\Seen")
+
     def cleanup_temp_files(self, filepaths: list[Path]) -> None:
         for path in filepaths:
             try:

@@ -20,6 +20,12 @@ class TestIMAPBot(unittest.TestCase):
         self.assertTrue(bot.is_allowed_sender("Teacher <teacher@school.com>"))
         self.assertFalse(bot.is_allowed_sender("spammer@school.com"))
 
+    def test_mark_unseen(self) -> None:
+        bot = IMAPBot(self.config)
+        mock_mail = MagicMock()
+        bot.mark_unseen(mock_mail, "123")
+        mock_mail.store.assert_called_once_with("123", "-FLAGS", "\\Seen")
+
 
 if __name__ == "__main__":
     unittest.main()

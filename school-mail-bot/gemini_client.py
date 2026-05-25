@@ -1,6 +1,7 @@
 import base64
 import mimetypes
 from pathlib import Path
+import time
 import httpx
 import logging
 from config import Config
@@ -25,6 +26,43 @@ class GeminiClient:
         b64_data = base64.b64encode(data).decode("utf-8")
         return {"inlineData": {"mimeType": mime_type, "data": b64_data}}
 
+    def _extract_text_from_file(self, filepath: Path) -> str | None:
+        mime_type, _ = mimetypes.guess_type(filepath)
+        if mime_type and not (
+            mime_type.startswith("text/")
+            or mime_type
+            in ("application/json", "application/xml", "application/javascript")
+        ):
+            if mime_type.startswith(
+                (
+                    "image/",
+                    "audio/",
+                    "video/",
+                    "application/pdf",
+                    "application/zip",
+                    "application/octet-stream",
+                )
+            ):
+                return None
+
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                content = f.read(1024 * 1024)
+                if "\x00" in content:
+                    return None
+                return content
+        except UnicodeDecodeError:
+            try:
+                with open(filepath, "r", encoding="latin-1") as f:
+                    content = f.read(1024 * 1024)
+                    if "\x00" in content:
+                        return None
+                    return content
+            except Exception:
+                return None
+        except Exception:
+            return None
+
     def query(self, email_body: str, attachments: list[Path]) -> str:
         parts = [
             {
@@ -32,8 +70,20 @@ class GeminiClient:
             }
         ]
 
+        # Check if email body contains the word "attachment" (case-insensitive)
+        contains_word_attachment = "attachment" in email_body.lower()
+
         for path in attachments:
-            parts.append(self._file_to_part(path))
+            if contains_word_attachment:
+                text = self._extract_text_from_file(path)
+                if text is not None:
+                    parts.append(
+                        {"text": f"Attachment '{path.name}' Text Content:\n{text}"}
+                    )
+                else:
+                    parts.append(self._file_to_part(path))
+            else:
+                parts.append(self._file_to_part(path))
 
         payload = {"contents": [{"parts": parts}]}
 
@@ -56,6 +106,8 @@ class GeminiClient:
                             f"Key failed with status {response.status_code}. Placing on cooldown."
                         )
                         self.key_manager.mark_cooldown(api_key, cooldown_seconds=300)
+                        if response.status_code == 429:
+                            time.sleep(0.5)
                     else:
                         logger.error(
                             f"Gemini API error (Status {response.status_code}): {response.text}"
